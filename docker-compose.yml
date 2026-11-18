@@ -1,0 +1,114 @@
+# IoT sensor panel - base stack (INSECURE profile: plain MQTT on 1883, anonymous).
+#
+#   docker compose up --build                 # insecure demo, works out of the box
+#   docker compose -f docker-compose.yml -f docker-compose.secure.yml up --build
+#                                             # TLS + auth + ACL (see docs/security-demo.md)
+#
+# Every value below has a development default so the first command works
+# without a .env file. Copy .env.example to .env and change the secrets for
+# anything beyond a local demo.
+
+name: iot-sensor-panel
+
+x-app-env: &app-env
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  MQTT_HOST: mosquitto
+  MQTT_PORT: "1883"
+  MQTT_TLS: "false"
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config/mosquitto.insecure.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+
+  influxdb:
+    image: influxdb:2.7.11
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    environment:
+      # Automated first-run setup (only applied when the data volume is empty).
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUX_ADMIN_USER:-admin}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUX_ADMIN_PASSWORD:-change-me-influx}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUX_ORG:-iot}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUX_BUCKET:-sensors}
+      DOCKER_INFLUXDB_INIT_RETENTION: ${INFLUX_RETENTION:-30d}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUX_TOKEN:-dev-only-influx-token-change-me}
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-config:/etc/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana-oss:11.4.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me-grafana}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/iot-overview.json
+      # Consumed by provisioning/datasources/influxdb.yml
+      INFLUX_ORG: ${INFLUX_ORG:-iot}
+      INFLUX_BUCKET: ${INFLUX_BUCKET:-sensors}
+      INFLUX_TOKEN: ${INFLUX_TOKEN:-dev-only-influx-token-change-me}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+  ingest:
+    build: .
+    image: iot-sensor-panel:local
+    restart: unless-stopped
+    command: ["iot-ingest"]
+    environment:
+      <<: *app-env
+      MQTT_CLIENT_ID: ingest
+      INFLUX_URL: http://influxdb:8086
+      INFLUX_ORG: ${INFLUX_ORG:-iot}
+      INFLUX_BUCKET: ${INFLUX_BUCKET:-sensors}
+      INFLUX_TOKEN: ${INFLUX_TOKEN:-dev-only-influx-token-change-me}
+    depends_on:
+      mosquitto:
+        condition: service_started
+      influxdb:
+        condition: service_healthy
+
+  simulator:
+    build: .
+    image: iot-sensor-panel:local
+    restart: unless-stopped
+    command: ["iot-simulator"]
+    environment:
+      <<: *app-env
+      SIM_DEVICES: ${SIM_DEVICES:-sim-living-room,sim-server-room,sim-greenhouse,sim-garage}
+      SIM_INTERVAL: ${SIM_INTERVAL:-5}
+      SIM_TIME_SCALE: ${SIM_TIME_SCALE:-1}
+      # Demo faults so alerts fire on their own: a recurring heat spike in the
+      # server room and a garage sensor that goes quiet every 15 minutes.
+      SIM_SPIKE: ${SIM_SPIKE:-sim-server-room:120:180:9:900}
+      SIM_SILENCE: ${SIM_SILENCE:-sim-garage:300:150:900}
+    depends_on:
+      - mosquitto
+
+volumes:
+  mosquitto-data:
+  influxdb-data:
+  influxdb-config:
+  grafana-data:

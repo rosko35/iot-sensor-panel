@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iot-sensor-panel"
+version = "0.1.0"
+description = "Smart sensor dashboard: ESP32 / simulator -> MQTT -> Python ingest -> InfluxDB 2 -> Grafana"
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Emre Özaydın" }]
+requires-python = ">=3.11"
+dependencies = [
+    "paho-mqtt>=2.1,<3",
+    "influxdb-client>=1.46,<2",
+    "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+certs = ["cryptography>=43"]
+dev = ["pytest>=8", "ruff>=0.6", "cryptography>=43"]
+
+[project.scripts]
+iot-simulator = "iot_panel.simulator:main"
+iot-ingest = "iot_panel.ingest:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "scripts"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "scripts", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["iot_panel"]
+known-local-folder = ["conftest", "gen_certs", "make_passwd"]

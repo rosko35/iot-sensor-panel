@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Local configuration and secrets
+.env
+*.env.local
+
+# Generated TLS material and broker credentials (never commit these)
+mosquitto/certs/*
+!mosquitto/certs/.gitkeep
+mosquitto/config/passwd
+*.pem
+*.key
+*.crt
+*.csr
+*.srl
+
+# Firmware secrets and build output
+firmware/include/secrets.h
+firmware/.pio/
+firmware/.vscode/
+
+# Packet captures from the security demo
+*.pcap
+*.pcapng
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

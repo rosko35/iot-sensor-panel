@@ -1,0 +1,4 @@
+-r requirements.txt
+cryptography>=43
+pytest>=8
+ruff>=0.6

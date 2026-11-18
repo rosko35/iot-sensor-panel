@@ -1,0 +1,4 @@
+# Runtime dependencies (also declared in pyproject.toml).
+paho-mqtt>=2.1,<3
+influxdb-client>=1.46,<2
+PyYAML>=6.0,<7

@@ -1,5 +1,7 @@
 # Hardware: ESP32 sensor node
 
+🇹🇷 [Türkçe](hardware.tr.md)
+
 The firmware in [`firmware/`](../firmware) is a PlatformIO project (Arduino
 framework) that publishes exactly the same JSON payload as the Python
 simulator, so a real board shows up in Grafana next to the virtual devices

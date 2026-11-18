@@ -1,5 +1,7 @@
 # IoT Sensor Panel
 
+🇹🇷 [Türkçe](README.tr.md)
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 ![Stack](https://img.shields.io/badge/stack-MQTT%20%C2%B7%20InfluxDB%202%20%C2%B7%20Grafana-orange)

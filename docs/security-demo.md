@@ -1,5 +1,7 @@
 # Security demo: plain MQTT vs. TLS + auth + ACL
 
+🇹🇷 [Türkçe](security-demo.tr.md)
+
 This walkthrough shows, with a packet capture, what an attacker on the same
 network sees in the default **insecure** setup and what changes with the
 **secure** override. It produces the two screenshots referenced in the README

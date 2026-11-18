@@ -1,5 +1,7 @@
 # Images
 
+🇹🇷 [Türkçe](README.tr.md)
+
 Screenshots and recordings referenced from the main README. They are captured
 by hand from a running stack; none are generated or mocked.
 

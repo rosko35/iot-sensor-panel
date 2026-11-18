@@ -1,12 +1,17 @@
-"""Ingest service: MQTT -> validation -> InfluxDB.
+"""Ingest service: MQTT -> validation -> InfluxDB, plus alert evaluation.
 
 Subscribes to ``sensors/+/telemetry`` and ``sensors/+/status``, validates each
 telemetry payload (see :mod:`iot_panel.payload`) and writes accepted readings
 to InfluxDB. Rejected messages are logged and counted, never written.
+
+Accepted readings are fed to the :class:`~iot_panel.alerts.AlertEngine`; alert
+transitions go to the console/Telegram notifiers, to retained MQTT topics
+``alerts/<device>/<rule>`` and to the ``alerts`` measurement in InfluxDB.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -18,8 +23,24 @@ from typing import Any, Protocol
 
 from influxdb_client import Point, WritePrecision
 
+from .alerts import AlertEngine, load_alert_config
+from .alerts.config import AlertConfig
+from .alerts.engine import event_from_dict
+from .alerts.notifiers import (
+    AlertDispatcher,
+    BackgroundNotifier,
+    InfluxAlertSink,
+    MqttAlertSink,
+    notifiers_from_env,
+)
 from .clock import Clock, SystemClock
-from .mqtt import STATUS_SUBSCRIPTION, TELEMETRY_SUBSCRIPTION, build_client, describe
+from .mqtt import (
+    ALERT_SUBSCRIPTION,
+    STATUS_SUBSCRIPTION,
+    TELEMETRY_SUBSCRIPTION,
+    build_client,
+    describe,
+)
 from .payload import DEVICE_ID_RE, PayloadError, Telemetry, device_id_from_topic, parse_payload
 from .settings import InfluxSettings, MqttSettings, env_str
 
@@ -27,6 +48,7 @@ log = logging.getLogger("iot_panel.ingest")
 
 TELEMETRY_MEASUREMENT = "telemetry"
 STATUS_MEASUREMENT = "device_status"
+DEFAULT_ALERTS_CONFIG = "config/alerts.yaml"
 
 
 class Writer(Protocol):
@@ -68,11 +90,15 @@ class IngestService:
         bucket: str,
         org: str,
         clock: Clock | None = None,
+        engine: AlertEngine | None = None,
+        dispatcher: AlertDispatcher | None = None,
     ) -> None:
         self.writer = writer
         self.bucket = bucket
         self.org = org
         self.clock = clock or SystemClock()
+        self.engine = engine
+        self.dispatcher = dispatcher
         self.stats: Counter[str] = Counter()
 
     # -- MQTT callbacks -------------------------------------------------------------
@@ -82,10 +108,18 @@ class IngestService:
             log.error("MQTT connection refused: %s", reason_code)
             return
         log.info("connected to broker, subscribing")
-        client.subscribe([(TELEMETRY_SUBSCRIPTION, 1), (STATUS_SUBSCRIPTION, 1)])
+        topics = [(TELEMETRY_SUBSCRIPTION, 1), (STATUS_SUBSCRIPTION, 1)]
+        if self.engine is not None:
+            # Retained alert state lets us resume active alerts after a restart.
+            topics.append((ALERT_SUBSCRIPTION, 1))
+        client.subscribe(topics)
 
     def on_message(self, client, userdata, msg) -> None:
         try:
+            if msg.topic.startswith("alerts/"):
+                if getattr(msg, "retain", False):
+                    self.restore_alert(msg.payload)
+                return
             self.handle_message(msg.topic, msg.payload)
         except Exception:  # never let one bad message kill the network thread
             self.stats["errors"] += 1
@@ -108,6 +142,8 @@ class IngestService:
         self.writer.write(bucket=self.bucket, org=self.org, record=telemetry_point(telemetry))
         self.stats["accepted"] += 1
         log.debug("stored %s", telemetry)
+        if self.engine is not None:
+            self._dispatch(self.engine.process(telemetry))
         return telemetry
 
     def handle_status(self, topic: str, payload: bytes) -> None:
@@ -126,6 +162,25 @@ class IngestService:
         self.stats["status"] += 1
         log.info("device %s reported %s", parts[1], state)
 
+    def check_offline(self) -> None:
+        if self.engine is not None:
+            self._dispatch(self.engine.check_offline())
+
+    def restore_alert(self, payload: bytes) -> None:
+        if self.engine is None or not payload:
+            return
+        try:
+            event = event_from_dict(json.loads(payload))
+        except (ValueError, KeyError, TypeError):
+            log.warning("ignoring malformed retained alert state")
+            return
+        self.engine.restore(event)
+
+    def _dispatch(self, events: list) -> None:
+        if events and self.dispatcher is not None:
+            self.stats["alerts"] += len(events)
+            self.dispatcher.dispatch(events)
+
 
 def _install_signal_handlers(stop: threading.Event) -> None:
     def _handle(signum, frame):
@@ -135,6 +190,14 @@ def _install_signal_handlers(stop: threading.Event) -> None:
     signal.signal(signal.SIGINT, _handle)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _handle)
+
+
+def _load_alerts(path: str) -> AlertConfig:
+    if os.path.exists(path):
+        log.info("loading alert rules from %s", path)
+        return load_alert_config(path)
+    log.warning("alert config %s not found, only offline detection is active", path)
+    return AlertConfig()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -150,6 +213,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not influx_settings.token:
         log.error("INFLUX_TOKEN is not set")
         return 2
+    alert_config = _load_alerts(
+        env_str(os.environ, "ALERTS_CONFIG", DEFAULT_ALERTS_CONFIG) or DEFAULT_ALERTS_CONFIG
+    )
 
     influx = InfluxDBClient(
         url=influx_settings.url, token=influx_settings.token, org=influx_settings.org
@@ -159,9 +225,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             batch_size=200, flush_interval=1_000, retry_interval=5_000, max_retries=5
         )
     )
-    service = IngestService(write_api, bucket=influx_settings.bucket, org=influx_settings.org)
-
     client = build_client(mqtt_settings)
+
+    notifiers = notifiers_from_env()
+    dispatcher = AlertDispatcher(
+        [
+            *notifiers,
+            MqttAlertSink(client),
+            InfluxAlertSink(write_api, bucket=influx_settings.bucket, org=influx_settings.org),
+        ]
+    )
+    service = IngestService(
+        write_api,
+        bucket=influx_settings.bucket,
+        org=influx_settings.org,
+        engine=AlertEngine(alert_config),
+        dispatcher=dispatcher,
+    )
     client.on_connect = service.on_connect
     client.on_message = service.on_message
     log.info("connecting to %s, writing to %s", describe(mqtt_settings), influx_settings.url)
@@ -170,12 +250,20 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     stop = threading.Event()
     _install_signal_handlers(stop)
+    ticks_per_report = max(1, int(60 / alert_config.check_interval))
+    ticks = 0
     try:
-        while not stop.wait(60):
-            log.info("stats: %s", dict(service.stats))
+        while not stop.wait(alert_config.check_interval):
+            service.check_offline()
+            ticks += 1
+            if ticks % ticks_per_report == 0:
+                log.info("stats: %s", dict(service.stats))
     finally:
         client.disconnect()
         client.loop_stop()
+        for notifier in notifiers:
+            if isinstance(notifier, BackgroundNotifier):
+                notifier.close()
         write_api.close()
         influx.close()
     return 0

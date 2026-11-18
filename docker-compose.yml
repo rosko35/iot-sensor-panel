@@ -84,6 +84,13 @@ services:
       INFLUX_ORG: ${INFLUX_ORG:-iot}
       INFLUX_BUCKET: ${INFLUX_BUCKET:-sensors}
       INFLUX_TOKEN: ${INFLUX_TOKEN:-dev-only-influx-token-change-me}
+      ALERTS_CONFIG: /app/config/alerts.yaml
+      # Optional: alerts are logged to the console when these are empty.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      # Edit config/alerts.yaml and restart the ingest service to apply.
+      - ./config:/app/config:ro
     depends_on:
       mosquitto:
         condition: service_started

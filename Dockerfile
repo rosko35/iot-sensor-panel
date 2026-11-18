@@ -17,6 +17,9 @@ COPY src ./src
 RUN pip install --no-deps . \
     && useradd --system --uid 10001 --no-create-home app
 
+# Default alert rules; docker-compose.yml mounts ./config over this directory.
+COPY config ./config
+
 USER app
 
 # Overridden per service in docker-compose.yml.

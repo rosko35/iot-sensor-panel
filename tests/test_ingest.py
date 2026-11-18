@@ -83,3 +83,83 @@ def test_point_without_optional_fields(clock):
 
     line = telemetry_point(Telemetry(device_id="d", ts=1.5, humidity=50.0)).to_line_protocol()
     assert line == "telemetry,device_id=d humidity=50 1500000000"
+
+
+# --------------------------------------------------------------------------- with alerts
+
+
+def make_alerting_service(writer, clock):
+    from iot_panel.alerts import AlertConfig, AlertEngine, ThresholdRule
+    from iot_panel.alerts.notifiers import AlertDispatcher, InfluxAlertSink, MqttAlertSink
+
+    published = []
+    mqtt_client = SimpleNamespace(publish=lambda *a, **k: published.append(a[0]))
+    rule = ThresholdRule("temp_high", "temperature", above=30, hysteresis=1)
+    engine = AlertEngine(AlertConfig(rules=(rule,), offline_timeout=60), clock)
+    dispatcher = AlertDispatcher(
+        [MqttAlertSink(mqtt_client), InfluxAlertSink(writer, bucket="sensors", org="iot")]
+    )
+    svc = IngestService(
+        writer, bucket="sensors", org="iot", clock=clock, engine=engine, dispatcher=dispatcher
+    )
+    return svc, published
+
+
+def test_threshold_alert_flows_to_mqtt_and_influx(writer, clock):
+    svc, published = make_alerting_service(writer, clock)
+    svc.on_message(None, None, msg("sensors/dev-1/telemetry", payload(temperature=35.0)))
+    assert published == ["alerts/dev-1/temp_high"]
+    assert [line.split(",")[0] for line in writer.lines] == ["telemetry", "alerts"]
+    assert "active=1i" in writer.lines[1]
+    assert svc.stats["alerts"] == 1
+
+
+def test_rejected_payload_never_reaches_the_alert_engine(writer, clock):
+    svc, published = make_alerting_service(writer, clock)
+    svc.on_message(None, None, msg("sensors/dev-1/telemetry", payload(temperature=99.0)))
+    assert published == [] and writer.records == []
+
+
+def test_offline_check_and_recovery_through_the_service(writer, clock):
+    svc, published = make_alerting_service(writer, clock)
+    svc.on_message(None, None, msg("sensors/dev-1/telemetry", payload(ts=...)))
+    clock.advance(61)
+    svc.check_offline()
+    assert published == ["alerts/dev-1/offline"]
+    svc.on_message(None, None, msg("sensors/dev-1/telemetry", payload(ts=...)))
+    assert published == ["alerts/dev-1/offline", "alerts/dev-1/offline"]
+    assert "active=0i" in writer.lines[-1]
+
+
+def test_retained_alert_state_is_restored(writer, clock):
+    import json
+
+    svc, published = make_alerting_service(writer, clock)
+    state = {
+        "kind": "raised",
+        "device_id": "dev-1",
+        "rule_id": "temp_high",
+        "metric": "temperature",
+        "severity": "warning",
+        "value": 33.0,
+        "threshold": 30.0,
+        "ts": 1.0,
+        "message": "x",
+        "active": True,
+    }
+    retained = SimpleNamespace(topic="alerts/dev-1/temp_high", payload=json.dumps(state).encode())
+    retained.retain = True
+    svc.on_message(None, None, retained)
+    svc.on_message(None, None, SimpleNamespace(topic="alerts/x/y", payload=b"{", retain=True))
+    assert len(svc.engine.active_alerts()) == 1
+    svc.on_message(None, None, msg("sensors/dev-1/telemetry", payload(temperature=20.0)))
+    assert published == ["alerts/dev-1/temp_high"]  # resolved, not re-raised
+
+
+def test_subscribes_to_alert_topics_when_alerting(writer, clock):
+    svc, _ = make_alerting_service(writer, clock)
+    calls = []
+    svc.on_connect(
+        SimpleNamespace(subscribe=calls.append), None, None, SimpleNamespace(is_failure=False)
+    )
+    assert ("alerts/+/+", 1) in calls[0]

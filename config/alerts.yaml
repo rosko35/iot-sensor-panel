@@ -1,0 +1,62 @@
+# Alert rules for the ingest service (mounted read-only into the container).
+#
+# Threshold rules use hysteresis so a value hovering around the threshold does
+# not flap between "raised" and "resolved":
+#
+#   above: 30, hysteresis: 1  -> raised when value > 30, resolved when value < 29
+#   below:  5, hysteresis: 1  -> raised when value <  5, resolved when value >  6
+#
+# Each rule needs exactly one of `above` / `below`.
+
+offline:
+  # A device that has not sent telemetry for this long is reported offline.
+  timeout_seconds: 60
+  # How often the offline check runs.
+  check_interval_seconds: 5
+  severity: critical
+  # Devices that should raise an offline alert even if they never reported
+  # since the ingest service started.
+  expected_devices: []
+
+rules:
+  - id: temp_high
+    metric: temperature
+    above: 30.0
+    hysteresis: 1.0
+    severity: warning
+
+  - id: temp_low
+    metric: temperature
+    below: 5.0
+    hysteresis: 1.0
+    severity: warning
+
+  - id: humidity_high
+    metric: humidity
+    above: 75.0
+    hysteresis: 5.0
+    severity: info
+
+# Per-device overrides, keyed by device id. Override any field of a global rule
+# by its id, disable it with `enabled: false`, or define a device-only rule by
+# giving a new id with a full definition.
+devices:
+  sim-server-room:
+    offline_timeout_seconds: 30
+    rules:
+      temp_high:
+        above: 28.0
+        hysteresis: 1.5
+        severity: critical
+
+  sim-greenhouse:
+    rules:
+      humidity_high:
+        above: 90.0
+      temp_high:
+        above: 35.0
+
+  sim-garage:
+    rules:
+      temp_low:
+        below: 2.0

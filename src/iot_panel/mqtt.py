@@ -16,6 +16,7 @@ STATUS_TOPIC = "sensors/{device_id}/status"
 TELEMETRY_SUBSCRIPTION = "sensors/+/telemetry"
 STATUS_SUBSCRIPTION = "sensors/+/status"
 ALERT_TOPIC = "alerts/{device_id}/{rule_id}"
+ALERT_SUBSCRIPTION = "alerts/+/+"
 
 
 def telemetry_topic(device_id: str) -> str:

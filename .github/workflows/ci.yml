@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ruff + pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Ruff lint
+        run: ruff check .
+      - name: Ruff format
+        run: ruff format --check .
+      - name: Pytest
+        run: pytest
+
+  compose-config:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compose version
+        run: docker compose version
+      - name: Validate insecure stack (no .env, defaults only)
+        run: docker compose -f docker-compose.yml config --quiet
+      - name: Prepare secure prerequisites
+        run: |
+          pip install cryptography
+          sed -E "s/^(MQTT_INGEST_PASSWORD|MQTT_MONITOR_PASSWORD|SIM_DEVICE_PASSWORD)=.*/\1=ci-$(openssl rand -hex 12)/" \
+            .env.example > .env
+          python scripts/gen_certs.py
+          python scripts/make_passwd.py --from-env .env
+      - name: Validate secure stack
+        run: docker compose -f docker-compose.yml -f docker-compose.secure.yml config --quiet
+      - name: Build application image
+        run: docker compose build ingest
+
+  smoke:
+    name: end-to-end smoke test (${{ matrix.mode }})
+    needs: [test, compose-config]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [insecure, secure]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Prepare secure prerequisites
+        if: matrix.mode == 'secure'
+        run: |
+          pip install cryptography
+          sed -E "s/^(MQTT_INGEST_PASSWORD|MQTT_MONITOR_PASSWORD|SIM_DEVICE_PASSWORD)=.*/\1=ci-$(openssl rand -hex 12)/" \
+            .env.example > .env
+          python scripts/gen_certs.py
+          python scripts/make_passwd.py --from-env .env
+          # the broker runs as uid 1883 inside the container
+          sudo chown 1883:1883 mosquitto/certs/server.key mosquitto/config/passwd
+      - name: Smoke test
+        run: bash scripts/smoke_test.sh ${{ matrix.mode }}
+
+  firmware:
+    name: build ESP32 firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build both sensor variants
+        working-directory: firmware
+        run: |
+          cp include/secrets.example.h include/secrets.h
+          pio run -e esp32-dht22 -e esp32-bme280

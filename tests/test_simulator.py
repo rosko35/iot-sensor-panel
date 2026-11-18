@@ -187,6 +187,9 @@ class FakeMqttClient:
         class Info:
             rc = 0
 
+            def wait_for_publish(self, timeout=None):
+                pass
+
         return Info()
 
 

@@ -381,7 +381,13 @@ class MqttPublisher:
 
     def stop(self) -> None:
         for device_id, client in self.clients.items():
-            client.publish(status_topic(device_id), "offline", qos=1, retain=True)
+            info = client.publish(status_topic(device_id), "offline", qos=1, retain=True)
+            # A clean disconnect suppresses the last will, so make sure the
+            # explicit "offline" status is delivered before disconnecting.
+            try:
+                info.wait_for_publish(timeout=2)
+            except (RuntimeError, ValueError):
+                log.debug("%s: could not deliver offline status", device_id)
             client.disconnect()
             client.loop_stop()
 

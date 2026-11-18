@@ -1,0 +1,8 @@
+# Keep LF everywhere: shell scripts, configs and Dockerfiles are consumed by
+# Linux containers and break with CRLF line endings.
+* text=auto eol=lf
+
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary
+*.gif binary

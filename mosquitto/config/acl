@@ -1,0 +1,20 @@
+# Mosquitto ACL for the secure profile. Default is deny: anything not granted
+# here is refused (publishes are dropped, subscriptions are not delivered).
+
+# Ingest service: reads every device's telemetry and status, and owns the
+# alert tree (it publishes alert state and reads it back after a restart).
+user ingest
+topic read sensors/+/telemetry
+topic read sensors/+/status
+topic readwrite alerts/#
+
+# Optional read-only observer account for debugging with mosquitto_sub.
+user monitor
+topic read sensors/#
+topic read alerts/#
+
+# Devices: the MQTT username is the device id (%u), and a device may only
+# publish its own telemetry and status (including its last-will message).
+# A compromised sensor therefore cannot inject data for any other device.
+pattern write sensors/%u/telemetry
+pattern write sensors/%u/status

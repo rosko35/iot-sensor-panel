@@ -106,3 +106,125 @@ def test_mosquitto_insecure_config(root):
     directives = {line.split()[0]: line for line in text.splitlines() if line and line[0] != "#"}
     assert directives["listener"].split()[1] == "1883"
     assert directives["allow_anonymous"].split()[1] == "true"
+
+
+# --------------------------------------------------------------------------- secure profile
+
+
+class ComposeLoader(yaml.SafeLoader):
+    """SafeLoader that understands Compose's merge tags (!override / !reset)."""
+
+
+for _tag in ("!override", "!reset"):
+    ComposeLoader.add_constructor(
+        _tag,
+        lambda loader, node: (
+            loader.construct_sequence(node)
+            if isinstance(node, yaml.SequenceNode)
+            else loader.construct_mapping(node)
+            if isinstance(node, yaml.MappingNode)
+            else loader.construct_scalar(node)
+        ),
+    )
+
+
+@pytest.fixture
+def secure(root):
+    with (root / "docker-compose.secure.yml").open(encoding="utf-8") as fh:
+        return yaml.load(fh, Loader=ComposeLoader)
+
+
+def conf_directives(path):
+    out = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            key, _, value = line.partition(" ")
+            out.setdefault(key, []).append(value.strip())
+    return out
+
+
+def test_secure_override_only_exposes_tls_port(secure, root):
+    raw = (root / "docker-compose.secure.yml").read_text(encoding="utf-8")
+    assert "ports: !override" in raw
+    assert secure["services"]["mosquitto"]["ports"] == ["8883:8883"]
+    for name in ("influxdb", "grafana"):
+        assert all(p.startswith("127.0.0.1:") for p in secure["services"][name]["ports"])
+
+
+def test_secure_override_mounts_config_over_insecure_one(secure, compose):
+    base_targets = {v.split(":")[1] for v in compose["services"]["mosquitto"]["volumes"]}
+    mounts = secure["services"]["mosquitto"]["volumes"]
+    targets = {m["target"]: m for m in mounts}
+    assert "/mosquitto/config/mosquitto.conf" in base_targets & set(targets)
+    assert targets["/mosquitto/config/mosquitto.conf"]["source"].endswith("mosquitto.secure.conf")
+    for mount in mounts:
+        assert mount["read_only"] is True
+        assert mount["bind"]["create_host_path"] is False
+
+
+def test_secure_clients_use_tls_and_credentials(secure):
+    for name in ("ingest", "simulator"):
+        env = secure["services"][name]["environment"]
+        assert env["MQTT_TLS"] == "true"
+        assert env["MQTT_PORT"] == "8883"
+        assert env["MQTT_CA_CERT"] == "/certs/ca.crt"
+    assert secure["services"]["ingest"]["environment"]["MQTT_PASSWORD"].startswith(
+        "${MQTT_INGEST_PASSWORD:?"
+    )
+    assert secure["services"]["simulator"]["environment"]["SIM_PER_DEVICE_AUTH"] == "true"
+
+
+def test_mosquitto_secure_config(root):
+    d = conf_directives(root / "mosquitto/config/mosquitto.secure.conf")
+    assert d["listener"] == ["8883 0.0.0.0"], "only the TLS listener may exist"
+    assert d["allow_anonymous"] == ["false"]
+    assert d["password_file"] == ["/mosquitto/config/passwd"]
+    assert d["acl_file"] == ["/mosquitto/config/acl"]
+    assert d["tls_version"] == ["tlsv1.2"]
+    for key in ("cafile", "certfile", "keyfile"):
+        assert d[key][0].startswith("/mosquitto/certs/")
+
+
+def test_acl_restricts_devices_to_their_own_topics(root):
+    lines = [
+        line.strip()
+        for line in (root / "mosquitto/config/acl").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    patterns = [line for line in lines if line.startswith("pattern")]
+    assert patterns == ["pattern write sensors/%u/telemetry", "pattern write sensors/%u/status"]
+    # no blanket write access to the sensor tree for anyone
+    assert not any(re.match(r"topic (write|readwrite) sensors/(#|\+)", line) for line in lines)
+    ingest = lines[lines.index("user ingest") + 1 : lines.index("user monitor")]
+    assert "topic readwrite alerts/#" in ingest
+    assert all("sensors" not in rule or rule.startswith("topic read ") for rule in ingest)
+
+
+def test_generated_secrets_are_git_ignored(root):
+    import shutil
+    import subprocess
+
+    if not shutil.which("git") or not (root / ".git").exists():
+        pytest.skip("not a git checkout")
+    paths = [
+        ".env",
+        "mosquitto/certs/ca.key",
+        "mosquitto/certs/server.key",
+        "mosquitto/certs/server.crt",
+        "mosquitto/config/passwd",
+        "firmware/include/secrets.h",
+        "capture.pcapng",
+    ]
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", *paths],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert sorted(result.stdout.split()) == sorted(paths)
+    tracked = subprocess.run(
+        ["git", "ls-files", "mosquitto/certs"], cwd=root, capture_output=True, text=True
+    ).stdout.split()
+    assert tracked in ([], ["mosquitto/certs/.gitkeep"])

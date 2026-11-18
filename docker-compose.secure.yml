@@ -1,0 +1,80 @@
+# SECURE profile override: TLS on 8883, username/password, per-device ACL.
+#
+# Prerequisites (all outputs are git-ignored):
+#   python scripts/gen_certs.py                  # CA + broker certificate
+#   python scripts/make_passwd.py --from-env .env
+#
+#   docker compose -f docker-compose.yml -f docker-compose.secure.yml up --build
+#
+# Requires Docker Compose >= 2.24.4 for the `!override` tag. Bind mounts use the
+# long syntax with create_host_path: false so a missing certificate or password
+# file fails loudly instead of Docker silently creating an empty directory.
+
+x-ca-cert: &ca-cert
+  type: bind
+  source: ./mosquitto/certs/ca.crt
+  target: /certs/ca.crt
+  read_only: true
+  bind:
+    create_host_path: false
+
+services:
+  mosquitto:
+    # Only the TLS port is published; 1883 is not exposed at all.
+    ports: !override
+      - "8883:8883"
+    volumes:
+      - type: bind
+        source: ./mosquitto/config/mosquitto.secure.conf
+        target: /mosquitto/config/mosquitto.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./mosquitto/config/acl
+        target: /mosquitto/config/acl
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./mosquitto/config/passwd
+        target: /mosquitto/config/passwd
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./mosquitto/certs
+        target: /mosquitto/certs
+        read_only: true
+        bind:
+          create_host_path: false
+
+  # Keep the databases and dashboards off the LAN in the secure setup.
+  influxdb:
+    ports: !override
+      - "127.0.0.1:8086:8086"
+
+  grafana:
+    ports: !override
+      - "127.0.0.1:3000:3000"
+
+  ingest:
+    environment:
+      MQTT_PORT: "8883"
+      MQTT_TLS: "true"
+      MQTT_CA_CERT: /certs/ca.crt
+      MQTT_USERNAME: ingest
+      MQTT_PASSWORD: ${MQTT_INGEST_PASSWORD:?set MQTT_INGEST_PASSWORD in .env}
+    volumes:
+      - *ca-cert
+
+  simulator:
+    environment:
+      MQTT_PORT: "8883"
+      MQTT_TLS: "true"
+      MQTT_CA_CERT: /certs/ca.crt
+      # Each virtual device logs in as itself so the ACL applies per device.
+      SIM_PER_DEVICE_AUTH: "true"
+      SIM_DEVICE_PASSWORD: ${SIM_DEVICE_PASSWORD:?set SIM_DEVICE_PASSWORD in .env}
+    volumes:
+      - *ca-cert

@@ -54,15 +54,23 @@ query="from(bucket: \"$INFLUX_BUCKET\")
 
 echo "waiting for telemetry from $expected devices..."
 for _ in $(seq 1 60); do
-  seen=$(dc exec -T influxdb influx query --org "$INFLUX_ORG" --token "$INFLUX_TOKEN" \
-    --raw "$query" 2>/dev/null | grep -c ',_result,' || true)
+  # Annotated CSV: one data row per device, shaped ",<result>,<table>,<device>,<count>".
+  # The result column is empty when it equals the "#default" annotation, so match both.
+  raw=$(dc exec -T influxdb influx query --org "$INFLUX_ORG" --token "$INFLUX_TOKEN" \
+    --raw "$query" 2>&1 || true)
+  seen=$(grep -Ec '^,(_result)?,[0-9]+,' <<<"$raw" || true)
   if [[ "$seen" -ge "$expected" ]]; then
     echo "ok: telemetry from $seen devices in InfluxDB"
     break
   fi
   sleep 5
 done
-[[ "${seen:-0}" -ge "$expected" ]] || { echo "only $seen/$expected devices reached InfluxDB" >&2; exit 1; }
+if [[ "${seen:-0}" -lt "$expected" ]]; then
+  echo "only $seen/$expected devices reached InfluxDB" >&2
+  echo "---- last query output ----" >&2
+  echo "${raw:-<none>}" >&2
+  exit 1
+fi
 
 echo "checking Grafana..."
 for _ in $(seq 1 30); do

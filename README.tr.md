@@ -17,6 +17,12 @@ modunda (düz MQTT, anonim erişim) hem de `secure` modunda (TLS, parolalar,
 cihaz başına ACL) çalışıyor ve aradaki farkı gösteren bir Wireshark anlatımı
 var.
 
+![Aktif sıcaklık alarmı olan Grafana paneli](docs/img/dashboard.webp)
+
+*Panel, simüle edilmiş sensörlerle kendi bilgisayarımda çalışırken: sunucu
+odasında kritik sıcaklık alarmı var; alarm geçmişinde garaj sensörünün
+çevrimdışı olup geri geldiği görülüyor.*
+
 | Canlı panel | Telegram'da uyarılar |
 | --- | --- |
 | *Demo GIF yer tutucusu: `docs/img/dashboard-demo.gif` (henüz kaydedilmedi)* | *Ekran görüntüsü yer tutucusu: `docs/img/telegram-alert.png`* |

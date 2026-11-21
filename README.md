@@ -15,6 +15,12 @@ The part I care most about is the **security showcase**: the same stack runs
 in an `insecure` mode (plain MQTT, anonymous) and a `secure` mode (TLS,
 passwords, per-device ACL), with a Wireshark walkthrough of the difference.
 
+![Grafana dashboard with an active temperature alert](docs/img/dashboard.webp)
+
+*The dashboard running on my machine with the simulated sensors: a critical
+temperature alert on the server room, and the garage sensor going offline and
+recovering in the alert history.*
+
 | Live dashboard | Alerts in Telegram |
 | --- | --- |
 | *Demo GIF placeholder: `docs/img/dashboard-demo.gif` (not recorded yet)* | *Screenshot placeholder: `docs/img/telegram-alert.png`* |
